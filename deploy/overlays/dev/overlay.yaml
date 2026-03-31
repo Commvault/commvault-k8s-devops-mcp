@@ -1,0 +1,34 @@
+# =============================================================================
+# overlays/dev — development / team-internal deployment
+#
+# Auth mode: oauth-auto (no pre-shared token needed)
+# Service:   LoadBalancer (direct IP access)
+# Namespace: commvault-mcp-dev
+# =============================================================================
+#
+# Deploy:
+#   kubectl apply -k deploy/overlays/dev
+#   kubectl get svc commvault-mcp -n commvault-mcp-dev
+#   # Connect: { "url": "http://<EXTERNAL-IP>:8403/mcp" }
+#
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: commvault-mcp-dev
+  labels:
+    app.kubernetes.io/name: commvault-mcp
+    environment: dev
+
+---
+# Dev uses oauth-auto — no pre-shared token required.
+# A placeholder secret is still created so the base deployment spec resolves.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: commvault-mcp-auth
+  namespace: commvault-mcp-dev
+type: Opaque
+stringData:
+  MCP_AUTH_TOKEN: ""
+
+

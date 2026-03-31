@@ -1,0 +1,38 @@
+# Node.js
+node_modules/
+npm-debug.log*
+
+# .vscode settings (personalized, not for sharing)
+mcp.json
+
+# Build / generated
+dist/
+out/
+.vscode/settings.json
+.vscode/mcp.json
+
+# Secrets and environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Kubernetes secret overrides (never commit)
+deploy/**/*-secret*.yaml
+deploy/**/*-override.yaml
+claude_desktop_config.json
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test output
+coverage/
+.nyc_output/
+test-results/

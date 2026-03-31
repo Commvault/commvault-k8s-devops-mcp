@@ -1,0 +1,27 @@
+# =============================================================================
+# overlays/dev — kustomize configuration
+#
+# Usage:
+#   1. Edit deployment-patch.yaml — replace REPLACE_WITH_YOUR_IMAGE:TAG
+#   2. kubectl apply -k deploy/overlays/dev
+#   3. kubectl get svc commvault-mcp -n commvault-mcp-dev
+#      # Connect: { "url": "http://<EXTERNAL-IP>:8403/mcp" }
+# =============================================================================
+
+# Sets metadata.namespace on all namespace-scoped resources and updates
+# ClusterRoleBinding subjects[*].namespace (replacing NAMESPACE_PLACEHOLDER).
+namespace: commvault-mcp-dev
+
+resources:
+  - ../../base   # ServiceAccount, ClusterRole, ClusterRoleBinding, Deployment, Service, NetworkPolicy
+  - overlay.yaml # Namespace, placeholder auth Secret
+
+patches:
+  - path: deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: commvault-mcp
+  - path: service-patch.yaml
+    target:
+      kind: Service
+      name: commvault-mcp

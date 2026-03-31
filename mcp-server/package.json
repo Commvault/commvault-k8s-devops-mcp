@@ -1,0 +1,27 @@
+{
+  "name": "commvault-k8s-mcp",
+  "version": "1.0.0",
+  "description": "Production MCP server for Commvault Kubernetes management",
+  "type": "module",
+  "main": "index.mjs",
+  "bin": {
+    "commvault-k8s-mcp": "./index.mjs"
+  },
+  "scripts": {
+    "start":       "node index.mjs",
+    "start:http":  "MCP_TRANSPORT=http node index.mjs",
+    "start:stdio": "MCP_TRANSPORT=stdio node index.mjs",
+    "dev":         "node --watch index.mjs",
+    "test":        "node --test tests/index.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["mcp", "commvault", "kubernetes", "helm"],
+  "license": "MIT"
+}

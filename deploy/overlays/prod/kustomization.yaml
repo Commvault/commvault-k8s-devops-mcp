@@ -1,0 +1,27 @@
+# =============================================================================
+# overlays/prod — kustomize configuration
+#
+# Usage:
+#   1. Edit deployment-patch.yaml  — replace REPLACE_WITH_YOUR_IMAGE:TAG
+#   2. Edit overlay.yaml           — replace mcp.example.com + tls-cert-secret
+#   3. Create the auth token secret (once):
+#        kubectl create secret generic commvault-mcp-auth \
+#          --namespace commvault-mcp \
+#          --from-literal=MCP_AUTH_TOKEN=$(openssl rand -base64 32)
+#   4. kubectl apply -k deploy/overlays/prod
+# =============================================================================
+
+# Sets metadata.namespace on all namespace-scoped resources, and updates
+# subjects[*].namespace in Clu                                                                                                                                                                                         sterRoleBindings (replacing NAMESPACE_PLACEHOLDER
+# in the base rbac.yaml with the real namespace).
+namespace: commvault-mcp
+
+resources:
+  - ../../base   # ServiceAccount, ClusterRole, ClusterRoleBinding, Deployment, Service, NetworkPolicy
+  - overlay.yaml # Namespace, TLS Ingress
+
+patches:
+  - path: deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: commvault-mcp

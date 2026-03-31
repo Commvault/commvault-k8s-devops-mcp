@@ -1,0 +1,16 @@
+# Keep shell scripts with LF line endings (required for execution on Linux/macOS)
+*.sh    text eol=lf
+
+# Windows scripts use CRLF
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+
+# YAML, JSON, Markdown — normalize to LF
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.mjs   text eol=lf
+
+# Dockerfile
+Dockerfile  text eol=lf

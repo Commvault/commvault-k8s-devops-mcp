@@ -1,0 +1,60 @@
+# =============================================================================
+# overlays/prod — customer production deployment
+#
+# Auth mode:  static-bearer  (MCP_AUTH_TOKEN from K8s Secret)
+# TLS:        Ingress with TLS termination (fill in your host + cert secret)
+# Service:    ClusterIP (internal only — access via Ingress)
+# Namespace:  commvault-mcp
+# =============================================================================
+#
+# Pre-requisites:
+#   1. Create the auth token secret:
+#        kubectl create secret generic commvault-mcp-auth \
+#          --namespace commvault-mcp \
+#          --from-literal=MCP_AUTH_TOKEN=$(openssl rand -base64 32)
+#   2. Replace REPLACE_WITH_YOUR_IMAGE:TAG with your registry image.
+#   3. Replace mcp.example.com with your actual hostname.
+#   4. Replace tls-cert-secret with your TLS certificate secret name.
+#
+# Deploy:
+#   kubectl apply -k deploy/overlays/prod
+#
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: commvault-mcp
+  labels:
+    app.kubernetes.io/name: commvault-mcp
+    environment: prod
+
+
+---
+# TLS Ingress — requires an ingress controller (nginx, traefik, etc.)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: commvault-mcp
+  namespace: commvault-mcp
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Uncomment to enable client certificate auth (mTLS):
+    # nginx.ingress.kubernetes.io/auth-tls-secret: "commvault-mcp/client-ca-secret"
+    # nginx.ingress.kubernetes.io/auth-tls-verify-client: "on"
+spec:
+  ingressClassName: nginx     # change to match your ingress class
+  tls:
+    - hosts:
+        - mcp.example.com     # replace with your hostname
+      secretName: tls-cert-secret  # replace with your TLS secret
+  rules:
+    - host: mcp.example.com   # replace with your hostname
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: commvault-mcp
+                port:
+                  number: 8403

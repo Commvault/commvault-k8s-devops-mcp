@@ -1,0 +1,7 @@
+# Service patch: change type to LoadBalancer for dev external access.
+apiVersion: v1
+kind: Service
+metadata:
+  name: commvault-mcp
+spec:
+  type: LoadBalancer

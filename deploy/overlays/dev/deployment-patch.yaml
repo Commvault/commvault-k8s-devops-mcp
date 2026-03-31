@@ -1,0 +1,17 @@
+# Deployment strategic-merge patch for dev.
+# Replace REPLACE_WITH_YOUR_IMAGE:TAG with your registry image before applying.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: commvault-mcp
+spec:
+  template:
+    spec:
+      containers:
+        - name: mcp-server
+          image: REPLACE_WITH_YOUR_IMAGE:TAG
+          env:
+            - name: MCP_AUTH_MODE
+              value: "oauth-auto"
+            - name: CV_NAMESPACE
+              value: "commvault"
