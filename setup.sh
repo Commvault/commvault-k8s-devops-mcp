@@ -496,11 +496,13 @@ if [[ "$SKIP_DEPLOY" == "false" ]]; then
     fi
     ok "Namespace: $NAMESPACE"
 
-    # 2. Auth secret (static-bearer only — oauth-auto issues tokens dynamically)
+    # 2. Auth secret
+    # Note: Even in oauth-auto mode, the base deployment.yaml references this secret,
+    # so we create a dummy secret to prevent CreateContainerConfigError
     EFFECTIVE_TOKEN="$AUTH_TOKEN"
     if [[ "$AUTH_MODE" == "static-bearer" ]]; then
         if [[ -z "$EFFECTIVE_TOKEN" ]]; then
-            if ! kubectl get secret commvault-mcp-auth -n "$NAMESPACE" --ignore-not-found -o name | grep -q .; then
+            if ! kubectl get secret commvault-mcp-auth -n "$NAMESPACE" --ignore-not-found -o name 2>/dev/null | grep -q .; then
                 EFFECTIVE_TOKEN=$(gen_token)
             fi
         fi
@@ -509,8 +511,17 @@ if [[ "$SKIP_DEPLOY" == "false" ]]; then
                 --namespace "$NAMESPACE" \
                 --from-literal=MCP_AUTH_TOKEN="$EFFECTIVE_TOKEN" \
                 --dry-run=client -o yaml | kubectl apply -f -
-            ok "Auth secret: commvault-mcp-auth"
+            ok "Auth secret: commvault-mcp-auth (static bearer token)"
         fi
+    else
+        # oauth-auto mode: create dummy secret since deployment.yaml references it
+        if ! kubectl get secret commvault-mcp-auth -n "$NAMESPACE" --ignore-not-found -o name 2>/dev/null | grep -q .; then
+            kubectl create secret generic commvault-mcp-auth \
+                --namespace "$NAMESPACE" \
+                --from-literal=MCP_AUTH_TOKEN="unused-oauth-mode" \
+                --dry-run=client -o yaml | kubectl apply -f -
+        fi
+        ok "Auth secret: commvault-mcp-auth (dummy for oauth-auto mode)"
     fi
 
     # 3. Helm repo

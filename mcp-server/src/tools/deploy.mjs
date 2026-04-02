@@ -13,18 +13,30 @@ export function registerDeployTools(server) {
   // ── deploy_config ──────────────────────────────────────────────────────────
   server.tool(
     "deploy_config",
-    "Deploy the base Commvault configuration (ConfigMap + Secret). Must run before any component.",
+    "Deploy the base Commvault configuration (ConfigMap + Secret with cvcreds). Must run before deploying CommServer or other components. Stores admin credentials that components inherit.",
     {
       csHostname:  z.string().describe("CommServer or gateway hostname, e.g. cs.commvault.svc.cluster.local"),
       namespace:   z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace"),
       releaseName: z.string().default("cvconfig").describe("Helm release name"),
-      user:        z.string().optional().describe("Admin username"),
-      password:    z.string().optional().describe("Admin password"),
+      user:        z.string().describe("Admin username REQUIRED for cvcreds Secret"),
+      password:    z.string().describe("Admin password REQUIRED for cvcreds Secret"),
       authcode:    z.string().optional().describe("Auth code (alternative to user/password)"),
     },
     (args) => tryCatchTool(() => {
       const { csHostname, namespace, releaseName, user, password, authcode } = args;
       assertNamespaceAllowed(namespace);
+      
+      // Validate required credentials
+      if (!authcode && (!user || !password)) {
+        throw new Error(
+          "Credentials are REQUIRED for config chart deployment.\n" +
+          "The config chart creates the cvcreds Secret that all components inherit.\n" +
+          "Please provide either:\n" +
+          "  1. Both 'user' and 'password' parameters, OR\n" +
+          "  2. An 'authcode' parameter"
+        );
+      }
+      
       const cmd = [
         "helm", "upgrade", "--install", releaseName, chart("config"),
         "--namespace", namespace, "--create-namespace",
@@ -41,10 +53,10 @@ export function registerDeployTools(server) {
   // ── deploy_component ───────────────────────────────────────────────────────
   server.tool(
     "deploy_component",
-    "Deploy a single Commvault component. The config chart must already be deployed.",
+    "Deploy a single Commvault component. The config chart (cvconfig) must be deployed first - it contains the cvcreds Secret that components inherit.",
     {
       component:       z.enum(Object.keys(CHART_MAP)).describe("Component to deploy"),
-      tag:             z.string().describe("Image tag, e.g. 11.42.1"),
+      tag:             z.string().describe("Image tag REQUIRED, e.g. 11.42.1"),
       releaseName:     z.string().optional().describe("Helm release name (defaults to component name)"),
       namespace:       z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace"),
       registry:        z.string().optional().describe("Container image registry"),
@@ -58,6 +70,27 @@ export function registerDeployTools(server) {
       const registry      = args.registry      || CV_IMAGE_REGISTRY  || undefined;
       const imageNamespace = args.imageNamespace || CV_IMAGE_NAMESPACE || undefined;
       assertNamespaceAllowed(namespace);
+      
+      // Check if config chart exists for CommServer deployment
+      if (component === 'commserver') {
+        try {
+          runCommand(["helm", "list", "--namespace", namespace, "--output", "json"]);
+          const listRes = runCommand(["helm", "list", "--namespace", namespace, "--output", "json"]);
+          const releases = JSON.parse(listRes.stdout);
+          const configExists = releases.some(r => r.name === 'cvconfig' && r.status === 'deployed');
+          
+          if (!configExists) {
+            throw new Error(
+              "Config chart 'cvconfig' must be deployed before CommServer.\n" +
+              "The config chart contains the cvcreds Secret with admin credentials that CommServer inherits.\n" +
+              "Run deploy_config first with: deploy_config(csHostname='cs.namespace.svc.cluster.local', user='admin', password='...')"
+            );
+          }
+        } catch (e) {
+          if (e.message.includes('must be deployed before')) throw e;
+          // Ignore other errors (e.g., helm not installed) and let deployment proceed
+        }
+      }
       const { dir, defaultName } = CHART_MAP[component];
       const name = args.releaseName || defaultName;
 
@@ -81,13 +114,13 @@ export function registerDeployTools(server) {
   // ── deploy_ring ────────────────────────────────────────────────────────────
   server.tool(
     "deploy_ring",
-    "Deploy a complete Commvault ring: config → CommServer → access nodes → media agents → web server → command center.",
+    "Deploy a complete Commvault ring: config → CommServer → access nodes → media agents → web server → command center. REQUIRES: tag, username, and password (or authcode).",
     {
-      tag:            z.string().describe("Image tag, e.g. 11.42.1 or 11.42.82.Rev1409"),
+      tag:            z.string().describe("Image tag REQUIRED, e.g. 11.42.1 or 11.42.82.Rev1409"),
       namespace:      z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace"),
-      user:           z.string().optional().describe("Admin username"),
-      password:       z.string().optional().describe("Admin password"),
-      authcode:       z.string().optional().describe("Auth code"),
+      user:           z.string().describe("Admin username REQUIRED (unless authcode is provided)"),
+      password:       z.string().describe("Admin password REQUIRED (unless authcode is provided)"),
+      authcode:       z.string().optional().describe("Auth code (alternative to user/password)"),
       accessNodeCount: z.number().default(2).describe("Number of access nodes"),
       mediaAgentCount: z.number().default(1).describe("Number of media agents"),
       repo:           z.string().optional().describe("Full image path, e.g. registry.io/eng/image-library (splits on last /)"),
@@ -102,6 +135,14 @@ export function registerDeployTools(server) {
       let registry      = args.registry      || CV_IMAGE_REGISTRY  || undefined;
       let imageNamespace = args.imageNamespace || CV_IMAGE_NAMESPACE || undefined;
       assertNamespaceAllowed(namespace);
+      
+      // Validate required fields for ring deployment
+      if (!tag) {
+        throw new Error("Image tag is REQUIRED for ring deployment. Please provide the tag parameter (e.g., 11.42.1)");
+      }
+      if (!authcode && (!user || !password)) {
+        throw new Error("Authentication credentials are REQUIRED. Please provide either:\n  1. Both 'user' and 'password' parameters, OR\n  2. An 'authcode' parameter");
+      }
 
       if (repo) {
         const split = splitRepo(repo);

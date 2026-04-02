@@ -576,7 +576,9 @@ if (-not $SkipDeploy) {
     }
     Write-Ok "Namespace: $Namespace"
 
-    # 2. Auth secret (static-bearer only — oauth-auto issues tokens dynamically)
+    # 2. Auth secret
+    # Note: Even in oauth-auto mode, the base deployment.yaml references this secret,
+    # so we create a dummy secret to prevent CreateContainerConfigError
     $effectiveToken = $AuthToken
     if ($AuthMode -eq "static-bearer") {
         if (-not $effectiveToken) {
@@ -589,8 +591,17 @@ if (-not $SkipDeploy) {
                 --namespace $Namespace `
                 --from-literal=MCP_AUTH_TOKEN=$effectiveToken `
                 --dry-run=client -o yaml | kubectl apply -f - | Out-Null
-            Write-Ok "Auth secret: commvault-mcp-auth"
+            Write-Ok "Auth secret: commvault-mcp-auth (static bearer token)"
         }
+    } else {
+        # oauth-auto mode: create dummy secret since deployment.yaml references it
+        if (-not (kubectl get secret commvault-mcp-auth -n $Namespace --ignore-not-found -o name 2>$null)) {
+            kubectl create secret generic commvault-mcp-auth `
+                --namespace $Namespace `
+                --from-literal=MCP_AUTH_TOKEN=unused-oauth-mode `
+                --dry-run=client -o yaml | kubectl apply -f - | Out-Null
+        }
+        Write-Ok "Auth secret: commvault-mcp-auth (dummy for oauth-auto mode)"
     }
 
     # 3. Helm repo (needed by the MCP server at runtime to deploy Commvault charts)

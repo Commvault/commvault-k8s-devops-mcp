@@ -87,6 +87,10 @@ spec:
               value: "8403"
             - name: HOST
               value: "0.0.0.0"
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: MCP_AUTH_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -131,6 +135,8 @@ metadata:
   labels:
     app.kubernetes.io/name: commvault-mcp
     app.kubernetes.io/component: mcp-server
+  annotations:
+    service.beta.kubernetes.io/oci-load-balancer-internal: "true"
 spec:
   selector:
     app.kubernetes.io/name: commvault-mcp

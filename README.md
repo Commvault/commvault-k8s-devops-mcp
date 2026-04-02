@@ -92,31 +92,49 @@ Configure the server manually in your client settings:
 
 ## Tool Reference
 
-The MCP server provides 18 tools organized into four functional categories:
+The MCP server provides 25 tools organized into four functional categories:
 
 ### Deployment Tools
 Deploy and configure Commvault components in your cluster.
 
 | Tool | What It Does | Example Ask |
 |---|---|---|
-| **deploy_config** | Set up base configuration (ConfigMaps, Secrets) | *"Deploy the initial Commvault configuration"* |
-| **deploy_component** | Deploy individual components (CommServer, AccessNode, etc.) | *"Deploy an AccessNode with 2 replicas"* |
+| **deploy_config** | Set up base configuration with cvcreds Secret (stores credentials) | *"Deploy the config with username admin and password Test123"* |
+| **deploy_component** | Deploy individual components (requires config chart first) | *"Deploy CommServer with tag 11.42.1"* |
 | **deploy_ring** | Deploy a complete Commvault ring in one command | *"Deploy ring version 11.42.1"* |
 | **upgrade_component** | Upgrade components to a new version | *"Upgrade all components to 11.42.2"* |
+| **rollback_deployment** | Rollback to a previous Helm revision with diff preview | *"Rollback the AccessNode to the previous version"* |
 | **add_disk** | Add storage volumes for DDB/data | *"Add a 1TB disk to the MediaAgent"* |
+
+> **⚠️ Deployment Order & Requirements**  
+> **1. Deploy Config First:** `deploy_config` creates the `cvcreds` Secret with admin credentials
+> - **REQUIRES**: `csHostname`, `user`, `password` (or `authcode`)
+> - Example: *"Deploy config with hostname cs.commvault.svc.cluster.local, user admin, password Test123"*
+>
+> **2. Deploy Components:** `deploy_component` inherits credentials from the config chart
+> - **REQUIRES**: Config chart must exist first for CommServer
+> - Example: *"Deploy CommServer with tag 11.42.1"* (no credentials needed - inherits from cvcreds)
+>
+> **3. Deploy Full Ring:** `deploy_ring` deploys config + all components
+> - **REQUIRES**: `tag`, `user`, `password` (or `authcode`)
+> - Example: *"Deploy ring 11.42.1 with user admin, password Test123"*
 
 ### Monitoring & Observability Tools
 Check status, view logs, and troubleshoot issues.
 
 | Tool | What It Does | Example Ask |
 |---|---|---|
+| **list_namespaces** | List all available namespaces | *"What namespaces are available?"* |
+| **check_kubectl_config** | Check kubectl configuration and connectivity | *"Is kubectl configured correctly?"* |
+| **validate_deployment** | Pre-flight checks before deployment (quotas, RBAC, storage) | *"Can I deploy a ring in this namespace?"* |
 | **get_status** | Complete overview of all deployments and pods | *"Show me the current status of everything"* |
 | **get_pods** | List all pods with their status | *"Which pods are running in the commvault namespace?"* |
 | **get_services** | List all Kubernetes services | *"What services are exposed?"* |
 | **describe_pod** | Detailed information about a specific pod | *"Describe the CommServer pod"* |
 | **get_pod_logs** | View container logs (stdout/stderr) | *"Show me the last 50 lines from the AccessNode logs"* |
+| **tail_logs** | Stream logs in real-time with filtering (supports wildcards, level filters) | *"Tail all CommServer logs with ERROR level"* |
 | **list_log_files** | List Commvault log files inside a pod | *"What log files are available in the CommServer?"* |
-| **download_log_files** | Download log files to your machine | *"Download all logs from the failing MediaAgent pod"* |
+| **download_log_files** | Download log files (K8s mode: provides kubectl command to retrieve) | *"Download all logs from the failing MediaAgent pod"* |
 
 ### Management Tools
 Scale, manage, and control your deployments.
@@ -126,7 +144,9 @@ Scale, manage, and control your deployments.
 | **scale_components** | Adjust the number of replicas | *"Scale the AccessNode to 5 replicas"* |
 | **uninstall_release** | Remove a Helm release | *"Uninstall the test deployment"* |
 | **helm_list** | Show all Helm releases | *"List all Helm releases in the cluster"* |
-| **set_namespace** | Change the active Kubernetes namespace | *"Switch to the production namespace"* |
+| **get_current_namespace** | View your current session namespace | *"What namespace am I using?"* |
+| **set_namespace** | Change the active namespace (session-scoped in HTTP mode) | *"Switch to the production namespace"* |
+| **test_connectivity** | Test pod-to-pod connectivity using cvping | *"Can the MediaAgent reach the CommServer?"* |
 | **port_forward** | Get port-forward command for local access | *"How do I access the CommServer Web Console?"* |
 
 ### Advanced Tools
@@ -188,6 +208,125 @@ AI: I'll upgrade all Commvault components to 11.42.2.
     
     All components are now running version 11.42.2
 ```
+
+---
+
+## Namespace Management
+
+The MCP server includes advanced namespace management features for multi-user and multi-tenant deployments.
+
+### Session-Scoped Namespaces (HTTP Mode)
+
+When running in HTTP mode (Kubernetes deployment), each user session has its own namespace context. Setting a namespace affects only your session and doesn't impact other users.
+
+**New Tools:**
+- **list_namespaces** - List all available namespaces (excluding system namespaces)
+- **get_current_namespace** - View your current session namespace or kubectl context
+- **set_namespace** - Set namespace for your session (or kubectl context in stdio mode)
+
+**Example Usage:**
+```
+User: "List available namespaces"
+AI: [Shows all non-system namespaces]
+
+User: "Set namespace to dev-environment"
+AI: Session namespace set to: dev-environment
+    This change affects only your current session.
+
+User: "Deploy a ring version 11.42.1"
+AI: [Deploys to dev-environment namespace]
+```
+
+### Key Features
+
+**Session Isolation** - In HTTP mode, namespace changes are scoped to your session. Multiple users can work in different namespaces simultaneously without conflicts.
+
+**Namespace Validation** - All operations validate that namespaces exist before executing commands, providing clear error messages with actionable guidance.
+
+**Protected Namespaces** - System namespaces (kube-system, kube-public, kube-node-lease) are automatically protected from modifications.
+
+**Smart Defaults** - Namespaces resolve in priority order:
+1. Explicitly specified in command
+2. Current session context (HTTP mode only)
+3. Kubectl context namespace
+4. Default namespace from configuration
+
+**Better Error Messages** - When a namespace doesn't exist, you get helpful suggestions:
+```
+Namespace "staging" not found.
+
+Available namespaces: Use the list_namespaces tool to see available options.
+Create namespace: kubectl create namespace staging
+```
+
+---
+
+## Troubleshooting
+
+### "No current context is set" Error
+
+If you see this error when using MCP tools, it means kubectl doesn't have a context configured.
+
+**Diagnosis:**
+Ask your AI assistant: *"Check kubectl configuration"*
+
+The `check_kubectl_config` tool will show:
+- Current kubectl context (if any)
+- Available contexts
+- Cluster connectivity status
+- Current namespace
+
+**Quick Fix:**
+1. List available contexts: `kubectl config get-contexts`
+2. Set a context: `kubectl config use-context <context-name>`
+3. Verify: Ask *"Check kubectl configuration"* again
+
+**For Kubernetes Deployment:**
+The MCP server pod needs a valid kubeconfig with a configured context. The ServiceAccount and ClusterRole created by setup.ps1 provide this automatically. If you're getting context errors:
+
+```bash
+# Check if the MCP pod has proper RBAC
+kubectl get serviceaccount commvault-mcp -n <namespace>
+kubectl get clusterrolebinding | grep commvault-mcp
+
+# Check pod logs for startup errors
+kubectl logs -n <namespace> deployment/commvault-mcp
+```
+
+### Namespace Changes Not Reflected
+
+**HTTP Mode (Kubernetes Deployment):**
+- Namespaces are session-scoped
+- Use `set_namespace` to change your session's namespace
+- Other users are not affected
+
+**Stdio Mode (Local):**
+- `set_namespace` modifies the global kubectl context
+- Changes affect all users sharing the kubeconfig
+
+**Verification:**
+Ask: *"What namespace am I currently using?"*
+
+### Log Download Behavior
+
+The `download_log_files` tool behaves differently depending on deployment mode:
+
+**Kubernetes Mode (HTTP/SSE):**
+- Logs are packaged on the MCP server pod's filesystem
+- Tool provides a `kubectl cp` command to retrieve the zip file
+- Example output:
+  ```bash
+  kubectl cp commvault-mcp/commvault-mcp-xxxxx:/path/to/logs.zip ./cv-logs/logs.zip
+  ```
+- Run this command from your **local terminal** to download the file
+
+**Local Mode (Stdio):**
+- Logs are downloaded directly to your local machine
+- Default location: `$HOME/Downloads/`
+- No additional steps needed
+
+**Why?**
+When the MCP server runs in Kubernetes, it can't directly write files to your local machine. The tool creates the archive on the server and provides the command to retrieve it.
 
 ---
 
@@ -392,22 +531,29 @@ Rotate the token at any time without rebuilding:
 
 | Tool | Description |
 |---|---|
-| `deploy_config` | Deploy base ConfigMap + Secret (run first) |
-| `deploy_component` | Deploy a single Commvault component |
-| `deploy_ring` | Deploy a full ring in one shot |
+| `deploy_config` | Deploy base ConfigMap + cvcreds Secret (REQUIRES: csHostname, user, password) |
+| `deploy_component` | Deploy a single component (REQUIRES: config chart exists for CommServer) |
+| `deploy_ring` | Deploy a full ring in one shot (REQUIRES: tag, user, password or authcode) |
 | `upgrade_component` | Upgrade one or all components to a new tag |
+| `rollback_deployment` | Rollback Helm release to previous revision with diff |
 | `add_disk` | Add a DDB/storage volume |
 | `get_pods` | List pods |
 | `get_services` | List services |
 | `get_status` | Full status overview |
+| `validate_deployment` | Pre-flight checks for namespace, RBAC, storage, quotas |
 | `describe_pod` | kubectl describe pod |
 | `get_pod_logs` | Container stdout logs |
+| `tail_logs` | Stream logs in real-time with filtering and multi-pod support |
 | `list_log_files` | List Commvault log files in a pod |
-| `download_log_files` | Download log files to local machine |
+| `download_log_files` | Package and download log files (provides kubectl command in K8s mode) |
 | `scale_components` | Scale deployments up or down |
 | `uninstall_release` | Helm uninstall a release |
 | `helm_list` | List Helm releases |
+| `list_namespaces` | List available namespaces |
+| `get_current_namespace` | Show current namespace context |
+| `check_kubectl_config` | Diagnose kubectl configuration |
 | `set_namespace` | Set kubectl context namespace |
+| `test_connectivity` | Test pod-to-pod connectivity using cvping |
 | `port_forward` | Get the kubectl port-forward command |
 | `run_kubectl` | Run any kubectl/helm command |
 

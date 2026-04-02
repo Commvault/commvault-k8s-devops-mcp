@@ -21,24 +21,34 @@ import {
 } from "./auth.mjs";
 import { createMcpServer } from "./server.mjs";
 import { logger } from "./logger.mjs";
+import { DEFAULT_NAMESPACE } from "./config.mjs";
+import {
+  getSession,
+  getSessionContext,
+  setSessionContext,
+  touchSession,
+  storeSession,
+  getAllSessions,
+  deleteSession,
+  getSessionCount
+} from "./session.mjs";
 
-// ── Session store ─────────────────────────────────────────────────────────────
-//  sessionId → { server, transport, lastSeenAt }
-const sessions = new Map();
+// Export session helpers for external use
+export { getSessionContext, setSessionContext, touchSession };
 
 async function closeSession(sessionId, reason = "") {
-  const entry = sessions.get(sessionId);
+  const entry = getSession(sessionId);
   if (!entry) return;
-  sessions.delete(sessionId);
+  deleteSession(sessionId);
   try { await entry.server.close(); } catch { /* ignore */ }
-  if (reason) logger.info("Session closed", { sessionId, reason });
+if (reason) logger.info("Session closed", { sessionId, reason });
 }
 
 function startSessionSweep() {
   const timer = setInterval(async () => {
     const now     = Date.now();
     const expired = [];
-    for (const [id, entry] of sessions.entries()) {
+    for (const [id, entry] of getAllSessions().entries()) {
       if (now - entry.lastSeenAt > HTTP_SESSION_IDLE_TTL_MS) expired.push(id);
     }
     for (const id of expired) await closeSession(id, "idle timeout");
@@ -51,7 +61,7 @@ function startSessionSweep() {
 }
 
 async function createSession(req, res) {
-  if (sessions.size >= HTTP_MAX_SESSIONS) {
+  if (getSessionCount() >= HTTP_MAX_SESSIONS) {
     res.writeHead(429, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Session limit reached" }));
     return;
@@ -70,9 +80,13 @@ async function createSession(req, res) {
     await transport.handleRequest(req, res);
     const sessionId = `${transport.sessionId || ""}`;
     if (!sessionId) { try { await sessionServer.close(); } catch { /* ignore */ } return; }
-    sessions.set(sessionId, { server: sessionServer, transport, lastSeenAt: Date.now() });
+    storeSession(sessionId, { 
+      server: sessionServer, 
+      transport, 
+      context: { namespace: DEFAULT_NAMESPACE }
+    });
     createdId = sessionId;
-    logger.info("Session created", { sessionId, sessions: sessions.size });
+    logger.info("Session created", { sessionId, sessions: getSessionCount(), defaultNamespace: DEFAULT_NAMESPACE });
   } catch (err) {
     try { await sessionServer.close(); } catch { /* ignore */ }
     throw err;
@@ -108,7 +122,7 @@ async function handleRequest(req, res) {
   // Health check
   if (req.method === "GET" && pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", transport: "http", sessions: sessions.size }));
+    res.end(JSON.stringify({ status: "ok", transport: "http", sessions: getSessionCount() }));
     return;
   }
 
@@ -189,15 +203,15 @@ async function handleRequest(req, res) {
     if (!sessionId) {
       await createSession(req, res);
     } else {
-      const entry = sessions.get(String(sessionId));
+      const entry = getSession(String(sessionId));
       if (!entry) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Session not found or expired" }, id: null }));
         return;
       }
-      entry.lastSeenAt = Date.now();
+      touchSession(String(sessionId));
       await entry.transport.handleRequest(req, res);
-      entry.lastSeenAt = Date.now();
+      touchSession(String(sessionId));
     }
     return;
   }
@@ -225,10 +239,10 @@ export function startHttpServer(onReady) {
 
   // Graceful shutdown
   const shutdown = async (signal) => {
-    logger.info("Shutting down", { signal, sessions: sessions.size });
+    logger.info("Shutting down", { signal, sessions: getSessionCount() });
     clearInterval(sweepTimer);
     httpServer.close(() => logger.info("HTTP server closed"));
-    for (const id of sessions.keys()) await closeSession(id, "shutdown");
+    for (const id of getAllSessions().keys()) await closeSession(id, "shutdown");
     process.exit(0);
   };
 

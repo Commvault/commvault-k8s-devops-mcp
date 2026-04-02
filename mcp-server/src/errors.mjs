@@ -34,6 +34,30 @@ export class AuthError extends McpError {
   }
 }
 
+export class NamespaceNotFoundError extends McpError {
+  constructor(namespace) {
+    super(
+      `Namespace "${namespace}" not found.\n\n` +
+      `Available namespaces: Use the list_namespaces tool to see available options.\n` +
+      `Create namespace: kubectl create namespace ${namespace}`,
+      { code: "NAMESPACE_NOT_FOUND" }
+    );
+    this.namespace = namespace;
+  }
+}
+
+export class NamespaceAccessDeniedError extends McpError {
+  constructor(namespace, allowed) {
+    super(
+      `Access denied to namespace "${namespace}".\n` +
+      `Allowed namespaces: ${allowed.join(", ")}`,
+      { code: "NAMESPACE_ACCESS_DENIED" }
+    );
+    this.namespace = namespace;
+    this.allowed = allowed;
+  }
+}
+
 /**
  * Wrap any thrown value into an MCP tool content response so the agent
  * sees useful text rather than an unhandled rejection.

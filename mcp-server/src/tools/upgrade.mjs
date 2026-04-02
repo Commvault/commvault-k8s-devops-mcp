@@ -67,4 +67,105 @@ export function registerUpgradeTools(server) {
       return { content: [{ type: "text", text: results.join("\n") }] };
     })
   );
+
+  // ── rollback_deployment ───────────────────────────────────────────────────
+  server.tool(
+    "rollback_deployment",
+    "Rollback a Helm release to a previous revision. Shows release history and optionally the diff between versions.",
+    {
+      releaseName: z.string().describe("Helm release name to rollback (e.g., commserve, accessnode1)"),
+      namespace:   z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace"),
+      revision:    z.number().optional().describe("Specific revision number to rollback to (defaults to previous revision)"),
+      showDiff:    z.boolean().default(true).describe("Show configuration diff before rollback"),
+      dryRun:      z.boolean().default(false).describe("Simulate rollback without applying changes"),
+    },
+    (args) => tryCatchTool(() => {
+      const { releaseName, namespace, revision, showDiff, dryRun } = args;
+      assertNamespaceAllowed(namespace);
+      const results = [];
+
+      // 1. Get release history
+      results.push("=== Release History ===");
+      const historyCmd = ["helm", "history", releaseName, "--namespace", namespace, "--output", "json"];
+      let history = [];
+      try {
+        const historyResult = runCommand(historyCmd);
+        history = JSON.parse(historyResult.stdout);
+        
+        if (history.length === 0) {
+          return { content: [{ type: "text", text: `No history found for release '${releaseName}' in namespace '${namespace}'` }] };
+        }
+        
+        results.push(`\nFound ${history.length} revision(s):\n`);
+        history.forEach(rev => {
+          const marker = rev.revision === history[history.length - 1].revision ? "→ CURRENT" : "";
+          results.push(`  Rev ${rev.revision}: ${rev.status} - Updated ${rev.updated} ${marker}`);
+          results.push(`    Chart: ${rev.chart}, App Version: ${rev.app_version}`);
+          if (rev.description) results.push(`    ${rev.description}`);
+          results.push("");
+        });
+      } catch (e) {
+        return { content: [{ type: "text", text: `Error getting history: ${e.message}` }] };
+      }
+
+      // Determine target revision
+      const currentRevision = history[history.length - 1].revision;
+      const targetRevision = revision || (currentRevision > 1 ? currentRevision - 1 : null);
+      
+      if (!targetRevision) {
+        return { content: [{ type: "text", text: `Cannot rollback: only one revision exists` }] };
+      }
+      
+      if (targetRevision >= currentRevision) {
+        return { content: [{ type: "text", text: `Cannot rollback to revision ${targetRevision}: it must be older than current revision ${currentRevision}` }] };
+      }
+
+      results.push(`\nTarget: Rollback from revision ${currentRevision} to revision ${targetRevision}`);
+
+      // 2. Show diff if requested
+      if (showDiff) {
+        results.push("\n=== Configuration Diff ===");
+        try {
+          const currentValues = runCommand(["helm", "get", "values", releaseName, "--namespace", namespace, "--revision", String(currentRevision)]);
+          const targetValues = runCommand(["helm", "get", "values", releaseName, "--namespace", namespace, "--revision", String(targetRevision)]);
+          
+          results.push(`\nCurrent Values (Rev ${currentRevision}):`);
+          results.push(currentValues.stdout || "(empty)");
+          results.push(`\nTarget Values (Rev ${targetRevision}):`);
+          results.push(targetValues.stdout || "(empty)");
+          
+          if (currentValues.stdout.trim() === targetValues.stdout.trim()) {
+            results.push("\n[WARN] No configuration differences detected between revisions");
+          }
+        } catch (e) {
+          results.push(`\n[WARN] Could not retrieve diff: ${e.message}`);
+        }
+      }
+
+      // 3. Perform rollback
+      results.push("\n=== Rollback Operation ===");
+      const rollbackCmd = ["helm", "rollback", releaseName, String(targetRevision), "--namespace", namespace];
+      if (dryRun) rollbackCmd.push("--dry-run");
+
+      results.push(`\nCommand: ${formatResult({ stdout: rollbackCmd.join(" "), stderr: "", exitCode: 0 }).split("\n")[0]}`);
+      
+      if (dryRun) {
+        results.push("\n[DRY-RUN] No changes will be applied");
+      }
+
+      try {
+        const rollbackResult = runCommand(rollbackCmd, 180000); // 3 minute timeout
+        results.push("\n" + formatResult(rollbackResult));
+        
+        if (!dryRun) {
+          results.push(`\n[OK] Successfully rolled back ${releaseName} to revision ${targetRevision}`);
+          results.push(`\nCheck status: kubectl get pods -n ${namespace} -l release=${releaseName}`);
+        }
+      } catch (e) {
+        results.push(`\n[FAIL] Rollback failed: ${e.message}`);
+      }
+
+      return { content: [{ type: "text", text: results.join("\n") }] };
+    })
+  );
 }
