@@ -201,7 +201,7 @@ For automated deployments, pass all parameters directly:
 ```powershell
 # Windows — full build + deploy (Docker Hub)
 .\setup.ps1 -Mode kubernetes `
-    -Registry dyadav3214 `
+    -Registry RegName `
     -ImageName commvault-mcp `
     -Tag 1.0.0
 
@@ -302,12 +302,12 @@ The `-Registry` / `--registry` parameter is the prefix that appears before `/<im
 
 | Registry type | What to enter | Resulting image |
 |---|---|---|
-| Docker Hub | `dyadav3214` | `dyadav3214/commvault-mcp:latest` |
+| Docker Hub | `RegName` | `RegName/commvault-mcp:latest` |
 | Azure ACR | `myacr.azurecr.io` | `myacr.azurecr.io/commvault-mcp:latest` |
 | Azure ACR + namespace | `myacr.azurecr.io/myorg` | `myacr.azurecr.io/myorg/commvault-mcp:latest` |
 | GitLab / other | `registry.example.com/grp` | `registry.example.com/grp/commvault-mcp:latest` |
 
-The wizard also accepts full Docker Hub browser URLs (e.g. `hub.docker.com/repository/docker/dyadav3214/testmcp/`) and strips them to the correct push reference automatically.
+The wizard also accepts full Docker Hub browser URLs (e.g. `hub.docker.com/repository/docker/RegName/testmcp/`) and strips them to the correct push reference automatically.
 
 ---
 
