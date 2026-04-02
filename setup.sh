@@ -81,6 +81,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Normalize namespace parameters to lowercase (Kubernetes RFC 1123 requirement)
+[[ -n "$NAMESPACE" ]] && NAMESPACE="${NAMESPACE,,}"
+[[ -n "$CV_NAMESPACE" ]] && CV_NAMESPACE="${CV_NAMESPACE,,}"
+
 # ── Colour helpers ────────────────────────────────────────────────────────────
 CYAN='\033[0;36m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'
 RED='\033[0;31m'; GRAY='\033[0;90m'; NC='\033[0m'
@@ -338,6 +342,15 @@ echo -e "  ${GRAY}$(printf '%.0s─' {1..54})${NC}"
 NAMESPACE=$(ask   "     MCP server pod namespace"      "$NAMESPACE")
 CV_NAMESPACE=$(ask "     Commvault workloads namespace" "$CV_NAMESPACE")
 
+# Kubernetes requires lowercase namespace names (RFC 1123 label)
+ORIG_NAMESPACE="$NAMESPACE"
+NAMESPACE="${NAMESPACE,,}"
+[[ "$NAMESPACE" != "$ORIG_NAMESPACE" ]] && echo -e "${GRAY}     [i] Namespace converted to lowercase: $NAMESPACE${NC}"
+
+ORIG_CV_NAMESPACE="$CV_NAMESPACE"
+CV_NAMESPACE="${CV_NAMESPACE,,}"
+[[ "$CV_NAMESPACE" != "$ORIG_CV_NAMESPACE" ]] && echo -e "${GRAY}     [i] CV namespace converted to lowercase: $CV_NAMESPACE${NC}"
+
 # ═══════════════════════════════════════════════════════
 # STAGE 3 — Commvault component image source registry
 # ═══════════════════════════════════════════════════════
@@ -475,8 +488,12 @@ if [[ "$SKIP_DEPLOY" == "false" ]]; then
     trap "rm -rf $TMP_DIR" EXIT
 
     # 1. Namespace
-    kubectl get namespace "$NAMESPACE" --ignore-not-found -o name | grep -q . \
-        || kubectl create namespace "$NAMESPACE"
+    if ! kubectl get namespace "$NAMESPACE" --ignore-not-found -o name 2>/dev/null | grep -q .; then
+        if ! kubectl create namespace "$NAMESPACE" 2>/dev/null; then
+            echo -e "${RED}Failed to create namespace '$NAMESPACE'. Ensure the name is lowercase and follows Kubernetes naming rules.${NC}" >&2
+            exit 1
+        fi
+    fi
     ok "Namespace: $NAMESPACE"
 
     # 2. Auth secret (static-bearer only — oauth-auto issues tokens dynamically)

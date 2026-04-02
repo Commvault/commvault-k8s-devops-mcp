@@ -115,6 +115,14 @@ if ($machinePath -or $userPath) {
     $env:Path = @($machinePath, $userPath) -join ";"
 }
 
+# Normalize namespace parameters to lowercase (Kubernetes RFC 1123 requirement)
+if ($Namespace) {
+    $Namespace = $Namespace.ToLower()
+}
+if ($CvNamespace) {
+    $CvNamespace = $CvNamespace.ToLower()
+}
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function Ask([string]$Prompt, [string]$Default = "") {
@@ -389,6 +397,19 @@ Write-Stage 2 5 "Kubernetes Namespaces"
 $Namespace   = Ask "     MCP server pod namespace"       $Namespace
 $CvNamespace = Ask "     Commvault workloads namespace"  $CvNamespace
 
+# Kubernetes requires lowercase namespace names (RFC 1123 label)
+$originalNamespace = $Namespace
+$Namespace = $Namespace.ToLower()
+if ($Namespace -ne $originalNamespace) {
+    Write-Host "     [i] Namespace converted to lowercase: $Namespace" -ForegroundColor DarkGray
+}
+
+$originalCvNamespace = $CvNamespace
+$CvNamespace = $CvNamespace.ToLower()
+if ($CvNamespace -ne $originalCvNamespace) {
+    Write-Host "     [i] CV namespace converted to lowercase: $CvNamespace" -ForegroundColor DarkGray
+}
+
 # ═══════════════════════════════════════════════════════
 # STAGE 3 — Commvault component image source registry
 # ═══════════════════════════════════════════════════════
@@ -547,7 +568,11 @@ if (-not $SkipDeploy) {
 
     # 1. Namespace
     if (-not (kubectl get namespace $Namespace --ignore-not-found -o name 2>$null)) {
-        kubectl create namespace $Namespace | Out-Null
+        kubectl create namespace $Namespace 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to create namespace '$Namespace'. Ensure the name is lowercase and follows Kubernetes naming rules."
+            exit 1
+        }
     }
     Write-Ok "Namespace: $Namespace"
 
