@@ -232,8 +232,8 @@ export function ensureHelmRepo() {
  */
 export function validateKubectlContext() {
   try {
-    // Check if kubectl is available
-    const versionRes = runCommand(["kubectl", "version", "--client", "--short"], 5000);
+    // Check if kubectl is available (--short flag removed in kubectl v1.28+)
+    const versionRes = runCommand(["kubectl", "version", "--client"], 5000);
     if (versionRes.exitCode !== 0) {
       return { hasContext: false, context: "", error: "kubectl is not available or not in PATH" };
     }
