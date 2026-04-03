@@ -28,6 +28,7 @@
 #   --helm-ver       Helm version in image (default: v3.16.0)
 #   --skip-build     Skip image build/push
 #   --skip-deploy    Skip Kubernetes deployment
+#   --mcp-port       Port exposed on the MCP Service and Ingress (default: 8403)
 # =============================================================================
 set -euo pipefail
 
@@ -50,6 +51,7 @@ KUBECTL_VER="v1.31.0"
 HELM_VER="v3.16.0"
 SKIP_BUILD=false
 SKIP_DEPLOY=false
+MCP_PORT=8403
 AUTH_MODE="static-bearer"
 OAUTH_OPT_IN=false
 CV_IMAGE_NAMESPACE=""
@@ -73,6 +75,7 @@ while [[ $# -gt 0 ]]; do
         --helm-ver)       HELM_VER="$2";     shift 2 ;;
         --skip-build)     SKIP_BUILD=true;   shift   ;;
         --skip-deploy)    SKIP_DEPLOY=true;  shift   ;;
+        --mcp-port)       MCP_PORT="$2";     shift 2 ;;
         --auth-mode)      AUTH_MODE="$2";    shift 2 ;;
         --help|-h)
             sed -n '/^# Usage:/,/^# =====/p' "$0" | grep -v "^# =====" | sed 's/^# \?//'
@@ -279,16 +282,16 @@ try:
     print('\\n'.join(sorted(regs)))
 except: pass
 " 2>/dev/null || true)
-        REG_COUNT=$(echo "$KNOWN_REGS" | grep -c . 2>/dev/null || echo 0)
+        REG_COUNT=$(echo "$KNOWN_REGS" | grep -c . 2>/dev/null) || REG_COUNT=0
         if [[ "$REG_COUNT" -eq 1 ]]; then
             DETECTED_REGISTRY="$KNOWN_REGS"
             echo -e "${GRAY}     [i] Detected Docker login: $DETECTED_REGISTRY${NC}"
         elif [[ "$REG_COUNT" -gt 1 ]]; then
             echo -e "${GRAY}     [i] Multiple Docker logins detected:${NC}"
-            i=1; while IFS= read -r r; do echo -e "${GRAY}         [$i] $r${NC}"; ((i++)); done <<< "$KNOWN_REGS"
+            i=1; while IFS= read -r r; do echo -e "${GRAY}         [$i] $r${NC}"; i=$((i+1)); done <<< "$KNOWN_REGS"
             echo -e "${GRAY}         [0] Enter a different registry manually${NC}"
             PICK=$(ask "     Choose [0-$REG_COUNT]" "")
-            if [[ "$PICK" =~ ^[1-9][0-9]*$ ]] && (( PICK >= 1 && PICK <= REG_COUNT )); then
+            if [[ "$PICK" =~ ^[1-9][0-9]*$ ]] && [ "$PICK" -ge 1 ] && [ "$PICK" -le "$REG_COUNT" ]; then
                 DETECTED_REGISTRY=$(echo "$KNOWN_REGS" | sed -n "${PICK}p")
             fi
         fi
@@ -395,6 +398,12 @@ if [[ -n "$MCP_HOSTNAME" ]]; then
     $USE_TLS && TLS_SECRET=$(ask "     TLS certificate Secret name" "$TLS_SECRET")
 fi
 
+MCP_PORT=$(ask "     MCP service port to expose" "$MCP_PORT")
+while ! [[ "$MCP_PORT" =~ ^[0-9]+$ ]] || [ "$MCP_PORT" -lt 1 ] || [ "$MCP_PORT" -gt 65535 ]; do
+    err "Port must be a number between 1 and 65535."
+    MCP_PORT=$(ask "     MCP service port to expose" "8403")
+done
+
 # ═══════════════════════════════════════════════════════
 # STAGE 5 — Authentication mode
 # ═══════════════════════════════════════════════════════
@@ -449,6 +458,7 @@ echo "  Commvault namespace  : $CV_NAMESPACE"
 HOSTNAME_DISPLAY=$( [[ -n "$MCP_HOSTNAME" ]] && echo "${PROTOCOL}://${MCP_HOSTNAME}" || echo "LoadBalancer IP (resolved after deploy)" )
 echo "  External hostname    : $HOSTNAME_DISPLAY"
 echo "  TLS                  : $USE_TLS"
+echo "  MCP service port     : $MCP_PORT"
 echo "  Auth mode            : $AUTH_MODE"
 echo -e "${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
@@ -535,6 +545,11 @@ if [[ "$SKIP_DEPLOY" == "false" ]]; then
     kubectl apply -f "$BASE_DIR/deployment.yaml" --namespace "$NAMESPACE"
     ok "Base manifests applied"
 
+    # Patch service port to configured MCP_PORT
+    PORT_PATCH="{\"spec\":{\"ports\":[{\"name\":\"http\",\"port\":${MCP_PORT},\"targetPort\":8403,\"protocol\":\"TCP\"}]}}"
+    kubectl patch svc commvault-mcp -n "$NAMESPACE" -p "$PORT_PATCH" || true
+    ok "Service port set to $MCP_PORT"
+
     # Patch service to LoadBalancer when no Ingress hostname configured.
     if [[ -z "$MCP_HOSTNAME" ]]; then
         kubectl patch svc commvault-mcp -n "$NAMESPACE" \
@@ -591,7 +606,7 @@ spec:${TLS_BLOCK}
               service:
                 name: commvault-mcp
                 port:
-                  number: 8403
+                  number: $MCP_PORT
 EOF
         kubectl apply -f "$TMP_DIR/ingress.yaml"
         ok "Ingress: $MCP_HOSTNAME"
@@ -617,7 +632,7 @@ EOF
             EP="${IP:-$HOST}"
             [[ -n "$EP" ]] && break
         done
-        ENDPOINT=$( [[ -n "$EP" ]] && echo "http://${EP}:8403" || echo "http://<PENDING-IP>:8403" )
+        ENDPOINT=$( [[ -n "$EP" ]] && echo "http://${EP}:${MCP_PORT}" || echo "http://<PENDING-IP>:${MCP_PORT}" )
     fi
 
     # 11. Retrieve token (static-bearer only — read back pre-existing secret if not generated this run)

@@ -9,6 +9,7 @@ import {
   runCommand, appendSetArg, formatResult, formatCommandForLog,
   redactCommandForLog, assertNamespaceAllowed, validateNamespaceExists,
   tokenizeCommand, parseNamespaceFlags, containsKubeconfigOverride,
+  resolveNamespace,
 } from "../exec.mjs";
 import { tryCatchTool } from "../errors.mjs";
 import { getSessionContext, setSessionContext } from "../http.mjs";
@@ -23,11 +24,12 @@ export function registerManageTools(server) {
       mountPath:   z.string().describe("Mount path in the container, e.g. /var/ddb2"),
       size:        z.string().default("50Gi").describe("Volume size, e.g. 100Gi"),
       volumeName:  z.string().optional().describe("Volume name (derived from mountPath if omitted)"),
-      namespace:   z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace"),
+      namespace:   z.string().optional().describe("Kubernetes namespace (defaults to session namespace or CV_NAMESPACE)"),
       storageClass: z.string().optional().describe("Storage class"),
     },
-    (args) => tryCatchTool(() => {
-      const { releaseName, mountPath, size, namespace, storageClass } = args;
+    (args, extra) => tryCatchTool(() => {
+      const namespace = resolveNamespace(args, extra);
+      const { releaseName, mountPath, size, storageClass } = args;
       assertNamespaceAllowed(namespace);
 
       const volName = args.volumeName || mountPath.replace(/^\/+/, "").replace(/[/\\]/g, "-");
@@ -71,10 +73,11 @@ export function registerManageTools(server) {
     {
       direction:   z.enum(["up", "down"]).describe("Scale direction"),
       namePattern: z.string().optional().describe("Only scale resources matching this pattern — omit to scale all"),
-      namespace:   z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace"),
+      namespace:   z.string().optional().describe("Kubernetes namespace (defaults to session namespace or CV_NAMESPACE)"),
     },
-    (args) => tryCatchTool(() => {
-      const { direction, namePattern, namespace } = args;
+    (args, extra) => tryCatchTool(() => {
+      const namespace = resolveNamespace(args, extra);
+      const { direction, namePattern } = args;
       assertNamespaceAllowed(namespace);
       const replicas = direction === "up" ? 1 : 0;
       const results = [];
@@ -105,28 +108,30 @@ export function registerManageTools(server) {
     "Helm uninstall a release.",
     {
       releaseName: z.string().describe("Helm release name"),
-      namespace:   z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace"),
+      namespace:   z.string().optional().describe("Kubernetes namespace (defaults to session namespace or CV_NAMESPACE)"),
     },
-    (args) => tryCatchTool(() => {
-      assertNamespaceAllowed(args.namespace);
-      const cmd = ["helm", "uninstall", args.releaseName, "--namespace", args.namespace];
+    (args, extra) => tryCatchTool(() => {
+      const namespace = resolveNamespace(args, extra);
+      assertNamespaceAllowed(namespace);
+      const cmd = ["helm", "uninstall", args.releaseName, "--namespace", namespace];
       return { content: [{ type: "text", text: `>> ${formatCommandForLog(cmd)}\n\n${formatResult(runCommand(cmd))}` }] };
     })
   );
 
   // ── helm_list ─────────────────────────────────────────────────────────────
   server.tool("helm_list",
-    "List Helm releases in a namespace.",
-    { namespace: z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace") },
-    (args) => tryCatchTool(() => {
-      assertNamespaceAllowed(args.namespace);
-      return { content: [{ type: "text", text: formatResult(runCommand(["helm", "list", "--namespace", args.namespace])) }] };
+    "List Helm chart releases (installed applications) in a namespace. Use this only to see what Helm charts are installed, not to inspect pods, deployments, or general Kubernetes resources.",
+    { namespace: z.string().optional().describe("Kubernetes namespace (defaults to session namespace or CV_NAMESPACE)") },
+    (args, extra) => tryCatchTool(() => {
+      const namespace = resolveNamespace(args, extra);
+      assertNamespaceAllowed(namespace);
+      return { content: [{ type: "text", text: formatResult(runCommand(["helm", "list", "--namespace", namespace])) }] };
     })
   );
 
   // ── get_current_namespace ──────────────────────────────────────────────────
   server.tool("get_current_namespace",
-    "Get the current default namespace for this session (in HTTP mode) or kubectl context (in stdio mode).",
+    "Get the current default namespace for this session. ALWAYS call this at the start of a new conversation before running any get_pods, get_status, or deployment commands, to confirm the correct namespace is active. In HTTP mode this is session-scoped; in stdio mode it reflects the kubectl context.",
     { },
     (_args, extra) => tryCatchTool(() => {
       // In HTTP mode, return the session namespace
@@ -145,7 +150,7 @@ export function registerManageTools(server) {
 
   // ── set_namespace ───────────────────────────────────────────────────────
   server.tool("set_namespace",
-    "Set the default namespace. In HTTP mode this is session-scoped (affects only this session). In stdio mode this modifies the global kubectl context.",
+    "Set the default namespace for this session. In HTTP mode this is session-scoped (other users are not affected). In stdio mode this modifies the global kubectl context. Call this whenever a user mentions a specific namespace or when get_pods/get_status returns no results and the user expects resources to exist.",
     { namespace: z.string().describe("Namespace to set as default") },
     (args, extra) => tryCatchTool(() => {
       assertNamespaceAllowed(args.namespace);
@@ -200,11 +205,12 @@ export function registerManageTools(server) {
     {
       podName:    z.string().describe("Pod name"),
       targetPort: z.number().describe("Pod port to forward, e.g. 443"),
-      namespace:  z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace"),
+      namespace:  z.string().optional().describe("Kubernetes namespace (defaults to session namespace or CV_NAMESPACE)"),
     },
-    (args) => tryCatchTool(() => {
-      assertNamespaceAllowed(args.namespace);
-      const cmd = `kubectl port-forward ${args.podName} --namespace ${args.namespace} :${args.targetPort}`;
+    (args, extra) => tryCatchTool(() => {
+      const namespace = resolveNamespace(args, extra);
+      assertNamespaceAllowed(namespace);
+      const cmd = `kubectl port-forward ${args.podName} --namespace ${namespace} :${args.targetPort}`;
       return { content: [{ type: "text", text: `Run this command in a terminal:\n\n${cmd}` }] };
     })
   );

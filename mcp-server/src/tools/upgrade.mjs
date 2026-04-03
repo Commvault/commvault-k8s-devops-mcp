@@ -21,11 +21,13 @@ export function registerUpgradeTools(server) {
       registry:        z.string().optional().describe("Container image registry"),
       imageNamespace:  z.string().optional().describe("Image namespace/sub-path"),
       imageRepository: z.string().optional().describe("Image repo name override"),
+      prefix:          z.string().optional().describe("Release name prefix used during deployment, e.g. 'k8-service1-'. Required when upgrading a single prefixed component and releaseName is not set."),
     },
     (args) => tryCatchTool(() => {
       const { component, tag, namespace, imageRepository } = args;
       const registry       = args.registry      || CV_IMAGE_REGISTRY  || undefined;
       const imageNamespace = args.imageNamespace || CV_IMAGE_NAMESPACE || undefined;
+      const prefix         = args.prefix        || undefined;
       assertNamespaceAllowed(namespace);
       const results = [];
 
@@ -61,7 +63,8 @@ export function registerUpgradeTools(server) {
         results.push(`\nAll Commvault components upgraded to ${tag}`);
       } else {
         const { dir, defaultName } = CHART_MAP[component];
-        upgradeOne(args.releaseName || defaultName, dir, component);
+        const effectiveName = args.releaseName || (prefix ? `${prefix}${defaultName}` : defaultName);
+        upgradeOne(effectiveName, dir, component);
       }
 
       return { content: [{ type: "text", text: results.join("\n") }] };

@@ -629,7 +629,7 @@ if (-not $SkipDeploy) {
 
     # Configure the externally exposed MCP service port.
     kubectl patch svc commvault-mcp -n $Namespace `
-        -p "{\"spec\":{\"ports\":[{\"name\":\"http\",\"port\":$McpPort,\"targetPort\":8403,\"protocol\":\"TCP\"}]}}" | Out-Null
+        -p ('{"spec":{"ports":[{"name":"http","port":' + $McpPort + ',"targetPort":8403,"protocol":"TCP"}]}}') | Out-Null
     Write-Ok "Service port set: $McpPort -> 8403"
 
     # Ensure the service is exposed appropriately.
@@ -696,7 +696,7 @@ spec:$tlsBlock
               service:
                 name: commvault-mcp
                 port:
-                                    number: $McpPort
+                  number: $McpPort
 "@ | Set-Content $ingressTmp -Encoding UTF8
         kubectl apply -f $ingressTmp | Out-Null
         Remove-Item $ingressTmp -Force

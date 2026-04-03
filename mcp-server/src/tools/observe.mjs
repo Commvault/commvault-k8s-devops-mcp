@@ -5,7 +5,7 @@
 
 import { z } from "zod";
 import { DEFAULT_NAMESPACE, IS_WINDOWS, DEFAULT_DOWNLOAD_DIR, PROTECTED_NAMESPACES, MCP_TRANSPORT } from "../config.mjs";
-import { runCommand, formatResult, formatCommandForLog, assertNamespaceAllowed, resolvePodNameOrThrow } from "../exec.mjs";
+import { runCommand, formatResult, formatCommandForLog, assertNamespaceAllowed, resolvePodNameOrThrow, resolveNamespace } from "../exec.mjs";
 import { tryCatchTool } from "../errors.mjs";
 import path from "path";
 import fs from "fs";
@@ -77,52 +77,78 @@ export function registerObserveTools(server) {
   );
 
   server.tool("get_pods",
-    "List pods in the namespace, optionally filtered by name pattern.",
+    "List Kubernetes pods in the namespace. Use for questions like 'show pods', 'what is running', 'are pods healthy', 'list resources in namespace'. IMPORTANT: if namespace is not specified explicitly by the user, first call get_current_namespace to confirm the active namespace.",
     {
-      namespace:   z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace"),
+      namespace:   z.string().optional().describe("Kubernetes namespace (defaults to session namespace or CV_NAMESPACE)"),
       namePattern: z.string().optional().describe("Filter pods by name pattern"),
     },
-    (args) => tryCatchTool(() => {
-      assertNamespaceAllowed(args.namespace);
-      const res = runCommand(["kubectl", "get", "pods", "-o", "wide", "--namespace", args.namespace]);
+    (args, extra) => tryCatchTool(() => {
+      const namespace = resolveNamespace(args, extra);
+      assertNamespaceAllowed(namespace);
+      const res = runCommand(["kubectl", "get", "pods", "-o", "wide", "--namespace", namespace]);
       let output = res.stdout;
       if (args.namePattern && output) {
         const lines = output.split("\n");
         const filtered = lines.slice(1).filter(l => l.toLowerCase().includes(args.namePattern.toLowerCase()));
         output = [lines[0], ...filtered].join("\n");
       }
-      return { content: [{ type: "text", text: output || "(no pods found)" }] };
+      const isEmpty = !output || output.trim() === "" || /^no resources found/i.test(output.trim());
+      if (isEmpty) {
+        const nsRes = runCommand(["kubectl", "get", "namespaces", "-o", "jsonpath={.items[*].metadata.name}"]);
+        const available = nsRes.stdout.trim().split(/\s+/).filter(Boolean).join(", ");
+        return { content: [{ type: "text", text:
+          `No pods found in namespace "${namespace}".\n\n` +
+          `Active namespace: ${namespace}\n` +
+          `Available namespaces: ${available || "(could not list)"}\n\n` +
+          `If this is wrong, use set_namespace to switch namespaces before retrying.`
+        }] };
+      }
+      return { content: [{ type: "text", text: `Active namespace: ${namespace}\n\n${output}` }] };
     })
   );
 
   server.tool("get_services",
     "List services in the namespace.",
-    { namespace: z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace") },
-    (args) => tryCatchTool(() => {
-      assertNamespaceAllowed(args.namespace);
-      const res = runCommand(["kubectl", "get", "services", "-o", "wide", "--namespace", args.namespace]);
+    { namespace: z.string().optional().describe("Kubernetes namespace (defaults to session namespace or CV_NAMESPACE)") },
+    (args, extra) => tryCatchTool(() => {
+      const namespace = resolveNamespace(args, extra);
+      assertNamespaceAllowed(namespace);
+      const res = runCommand(["kubectl", "get", "services", "-o", "wide", "--namespace", namespace]);
       return { content: [{ type: "text", text: formatResult(res) }] };
     })
   );
 
   server.tool("get_status",
-    "Full status of the deployment: Helm releases, pods, services, PVCs, deployments, statefulsets.",
-    { namespace: z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace") },
-    (args) => tryCatchTool(() => {
-      assertNamespaceAllowed(args.namespace);
+    "Full status of a namespace: pods, services, PVCs, Kubernetes Deployments, StatefulSets, and Helm releases. Use for questions like 'show all resources', 'show deployments', 'what is deployed in namespace', 'status of the environment'. Prefer this over helm_list for general 'show what is deployed' questions. IMPORTANT: if namespace is not specified explicitly by the user, first call get_current_namespace to confirm the active namespace.",
+    { namespace: z.string().optional().describe("Kubernetes namespace (defaults to session namespace or CV_NAMESPACE)") },
+    (args, extra) => tryCatchTool(() => {
+      const namespace = resolveNamespace(args, extra);
+      assertNamespaceAllowed(namespace);
       const sections = [
-        ["Helm Releases", ["helm", "list", "--namespace", args.namespace]],
-        ["Pods",          ["kubectl", "get", "pods", "-o", "wide", "--namespace", args.namespace]],
-        ["Services",      ["kubectl", "get", "services", "-o", "wide", "--namespace", args.namespace]],
-        ["PVCs",          ["kubectl", "get", "pvc", "--namespace", args.namespace]],
-        ["Deployments",   ["kubectl", "get", "deployments", "--namespace", args.namespace]],
-        ["StatefulSets",  ["kubectl", "get", "statefulsets", "--namespace", args.namespace]],
+        ["Helm Releases", ["helm", "list", "--namespace", namespace]],
+        ["Pods",          ["kubectl", "get", "pods", "-o", "wide", "--namespace", namespace]],
+        ["Services",      ["kubectl", "get", "services", "-o", "wide", "--namespace", namespace]],
+        ["PVCs",          ["kubectl", "get", "pvc", "--namespace", namespace]],
+        ["Deployments",   ["kubectl", "get", "deployments", "--namespace", namespace]],
+        ["StatefulSets",  ["kubectl", "get", "statefulsets", "--namespace", namespace]],
       ];
-      const parts = [];
+      const parts = [`Active namespace: ${namespace}\n`];
+      let totalLines = 0;
       for (const [label, cmd] of sections) {
+        const result = formatResult(runCommand(cmd));
         parts.push(`=== ${label} ===`);
-        parts.push(formatResult(runCommand(cmd)));
+        parts.push(result);
         parts.push("");
+        // Count non-header output lines as a proxy for "has resources"
+        totalLines += result.split("\n").filter(l => l.trim() && !/^no resources found/i.test(l.trim())).length;
+      }
+      if (totalLines <= sections.length) {
+        // Every section returned empty — likely wrong namespace
+        const nsRes = runCommand(["kubectl", "get", "namespaces", "-o", "jsonpath={.items[*].metadata.name}"]);
+        const available = nsRes.stdout.trim().split(/\s+/).filter(Boolean).join(", ");
+        parts.push(`\n⚠️  No resources found in namespace "${namespace}".`);
+        parts.push(`Available namespaces: ${available || "(could not list)"}`);
+        parts.push(`If this is the wrong namespace, use set_namespace <name> and retry.`);
       }
       return { content: [{ type: "text", text: parts.join("\n") }] };
     })
@@ -132,12 +158,13 @@ export function registerObserveTools(server) {
     "kubectl describe pod — useful for troubleshooting.",
     {
       podName:   z.string().describe("Pod name or partial name"),
-      namespace: z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace"),
+      namespace: z.string().optional().describe("Kubernetes namespace (defaults to session namespace or CV_NAMESPACE)"),
     },
-    (args) => tryCatchTool(() => {
-      assertNamespaceAllowed(args.namespace);
-      const pod = resolvePodNameOrThrow(args.podName, args.namespace);
-      return { content: [{ type: "text", text: formatResult(runCommand(["kubectl", "describe", "pod", pod, "--namespace", args.namespace])) }] };
+    (args, extra) => tryCatchTool(() => {
+      const namespace = resolveNamespace(args, extra);
+      assertNamespaceAllowed(namespace);
+      const pod = resolvePodNameOrThrow(args.podName, namespace);
+      return { content: [{ type: "text", text: formatResult(runCommand(["kubectl", "describe", "pod", pod, "--namespace", namespace])) }] };
     })
   );
 
@@ -145,13 +172,14 @@ export function registerObserveTools(server) {
     "Container stdout logs (kubectl logs). Not Commvault application logs.",
     {
       podName:   z.string().describe("Pod name or partial name"),
-      namespace: z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace"),
+      namespace: z.string().optional().describe("Kubernetes namespace (defaults to session namespace or CV_NAMESPACE)"),
       tailLines: z.number().default(100).describe("Number of lines to tail"),
     },
-    (args) => tryCatchTool(() => {
-      assertNamespaceAllowed(args.namespace);
-      const pod = resolvePodNameOrThrow(args.podName, args.namespace);
-      return { content: [{ type: "text", text: formatResult(runCommand(["kubectl", "logs", pod, "--namespace", args.namespace, `--tail=${args.tailLines}`])) }] };
+    (args, extra) => tryCatchTool(() => {
+      const namespace = resolveNamespace(args, extra);
+      assertNamespaceAllowed(namespace);
+      const pod = resolvePodNameOrThrow(args.podName, namespace);
+      return { content: [{ type: "text", text: formatResult(runCommand(["kubectl", "logs", pod, "--namespace", namespace, `--tail=${args.tailLines}`])) }] };
     })
   );
 
@@ -159,12 +187,13 @@ export function registerObserveTools(server) {
     "List Commvault log files inside a pod at /var/log/commvault/Log_Files/",
     {
       podName:   z.string().describe("Pod name or partial name"),
-      namespace: z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace"),
+      namespace: z.string().optional().describe("Kubernetes namespace (defaults to session namespace or CV_NAMESPACE)"),
     },
-    (args) => tryCatchTool(() => {
-      assertNamespaceAllowed(args.namespace);
-      const pod = resolvePodNameOrThrow(args.podName, args.namespace);
-      const res = runCommand(["kubectl", "exec", pod, "--namespace", args.namespace, "--", "ls", "-la", "/var/log/commvault/Log_Files/"]);
+    (args, extra) => tryCatchTool(() => {
+      const namespace = resolveNamespace(args, extra);
+      assertNamespaceAllowed(namespace);
+      const pod = resolvePodNameOrThrow(args.podName, namespace);
+      const res = runCommand(["kubectl", "exec", pod, "--namespace", namespace, "--", "ls", "-la", "/var/log/commvault/Log_Files/"]);
       return { content: [{ type: "text", text: `Log files in ${pod}:\n\n${formatResult(res)}` }] };
     })
   );
@@ -173,17 +202,18 @@ export function registerObserveTools(server) {
     "Download Commvault log files from a pod. In Kubernetes mode, provides commands to retrieve files from the MCP server pod to your local machine.",
     {
       podName:      z.string().describe("Pod name or partial name"),
-      namespace:    z.string().default(DEFAULT_NAMESPACE).describe("Kubernetes namespace"),
+      namespace:    z.string().optional().describe("Kubernetes namespace (defaults to session namespace or CV_NAMESPACE)"),
       specificFile: z.string().optional().describe("Specific log file to download — omit to download all"),
       downloadDir:  z.string().default(DEFAULT_DOWNLOAD_DIR).describe("Local destination directory"),
     },
-    (args) => tryCatchTool(() => {
-      assertNamespaceAllowed(args.namespace);
+    (args, extra) => tryCatchTool(() => {
+      const namespace = resolveNamespace(args, extra);
+      assertNamespaceAllowed(namespace);
       // Validate specificFile before any exec call — guard against path traversal.
       if (args.specificFile && /[/\\]|\.\./u.test(args.specificFile)) {
         throw new Error(`Invalid log file name "${args.specificFile}": must not contain path separators or "..".`);
       }
-      const pod = resolvePodNameOrThrow(args.podName, args.namespace);
+      const pod = resolvePodNameOrThrow(args.podName, namespace);
       const resolvedDir = args.downloadDir.replace(/^\$HOME/i, process.env.USERPROFILE || process.env.HOME || ".");
       const results = [];
       
@@ -206,7 +236,7 @@ export function registerObserveTools(server) {
       if (args.specificFile) {
         fs.mkdirSync(resolvedDir, { recursive: true });
         const dest = IS_WINDOWS ? `./${args.specificFile}` : path.posix.join(resolvedDir.replace(/\\/g, "/"), args.specificFile);
-        const cmd  = ["kubectl", "cp", `${args.namespace}/${pod}:/var/log/commvault/Log_Files/${args.specificFile}`, dest];
+        const cmd  = ["kubectl", "cp", `${namespace}/${pod}:/var/log/commvault/Log_Files/${args.specificFile}`, dest];
         results.push(`>> ${formatCommandForLog(cmd)}`);
         results.push(formatResult(runCommand(cmd, 300_000, IS_WINDOWS ? { cwd: resolvedDir } : {})));
         
@@ -223,7 +253,7 @@ export function registerObserveTools(server) {
         const zipFile  = `${resolvedDir}/${pod}-logs.zip`;
         fs.mkdirSync(resolvedDir, { recursive: true });
 
-        const cpCmd = ["kubectl", "cp", `${args.namespace}/${pod}:/var/log/commvault/Log_Files/`, IS_WINDOWS ? `./${pod}` : localDir];
+        const cpCmd = ["kubectl", "cp", `${namespace}/${pod}:/var/log/commvault/Log_Files/`, IS_WINDOWS ? `./${pod}` : localDir];
         results.push(`>> ${formatCommandForLog(cpCmd)}`);
         results.push(formatResult(runCommand(cpCmd, 300_000, IS_WINDOWS ? { cwd: resolvedDir } : {})));
 
