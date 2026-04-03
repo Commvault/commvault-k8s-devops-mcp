@@ -34,6 +34,9 @@
 .PARAMETER TlsSecret
     [kubernetes] TLS certificate secret name in the namespace. Default: "tls-cert-secret"
 
+.PARAMETER McpPort
+    [kubernetes] Service port exposed by the MCP endpoint. Default: 8403.
+
 .PARAMETER AuthToken
     [kubernetes] Bearer token for AI clients. Auto-generated if not provided.
 
@@ -92,6 +95,8 @@ param(
     [string]$ImageName       = "commvault-mcp",
     [string]$McpHostname,
     [string]$TlsSecret       = "tls-cert-secret",
+    [ValidateRange(1, 65535)]
+    [int]$McpPort            = 8403,
     [string]$AuthToken,
     [ValidateSet("static-bearer", "oauth-auto")]
     [string]$AuthMode        = "static-bearer",
@@ -453,6 +458,12 @@ if (-not [string]::IsNullOrWhiteSpace($CvRegistry)) {
 Write-Stage 4 5 "Networking (optional)"
 Write-Host "     Leave hostname blank to expose via LoadBalancer IP instead of Ingress." -ForegroundColor DarkGray
 $McpHostname = Ask "     External hostname for MCP" $McpHostname
+$McpPortInput = Ask "     MCP service port to expose" "$McpPort"
+if ($McpPortInput -notmatch '^[0-9]+$' -or [int]$McpPortInput -lt 1 -or [int]$McpPortInput -gt 65535) {
+    Write-Error "Invalid MCP port '$McpPortInput'. Must be an integer between 1 and 65535."
+    exit 1
+}
+$McpPort = [int]$McpPortInput
 
 $useTls = $false
 if ($McpHostname) {
@@ -517,6 +528,7 @@ if ($CvRegistry) {
 }
 $hostnameDisplay = if ($McpHostname) { "${protocol}://${McpHostname}" } else { "LoadBalancer IP (resolved after deploy)" }
 Write-Host "  External hostname    : $hostnameDisplay"
+Write-Host "  MCP service port     : $McpPort"
 Write-Host "  TLS                  : $useTls"
 Write-Host "  Auth mode            : $AuthMode"
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
@@ -615,6 +627,11 @@ if (-not $SkipDeploy) {
     kubectl apply -f (Join-Path $BaseDir "deployment.yaml") --namespace $Namespace | Out-Null
     Write-Ok "Base manifests applied"
 
+    # Configure the externally exposed MCP service port.
+    kubectl patch svc commvault-mcp -n $Namespace `
+        -p "{\"spec\":{\"ports\":[{\"name\":\"http\",\"port\":$McpPort,\"targetPort\":8403,\"protocol\":\"TCP\"}]}}" | Out-Null
+    Write-Ok "Service port set: $McpPort -> 8403"
+
     # Ensure the service is exposed appropriately.
     # The base Service has no type (ClusterIP default). When no Ingress hostname
     # is configured we need a LoadBalancer; when an Ingress is used ClusterIP is correct.
@@ -679,7 +696,7 @@ spec:$tlsBlock
               service:
                 name: commvault-mcp
                 port:
-                  number: 8403
+                                    number: $McpPort
 "@ | Set-Content $ingressTmp -Encoding UTF8
         kubectl apply -f $ingressTmp | Out-Null
         Remove-Item $ingressTmp -Force
@@ -706,7 +723,7 @@ spec:$tlsBlock
             $ep   = if ($ip) { $ip } elseif ($lbHost) { $lbHost } else { "" }
             if ($ep) { break }
         }
-        $endpoint = if ($ep) { "http://${ep}:8403" } else { "http://<PENDING-IP>:8403" }
+        $endpoint = if ($ep) { "http://${ep}:$McpPort" } else { "http://<PENDING-IP>:$McpPort" }
     }
 
     # 11. Retrieve token (static-bearer only — read back pre-existing secret if not generated this run)
